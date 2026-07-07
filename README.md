@@ -5,7 +5,7 @@ Minimal HTTP proxy server on Go with YAML config and optional Basic auth.
 ## Run
 
 ```bash
-go run . -config config.yaml
+CONFIG_PATH=config.yaml go run .
 ```
 
 ## Config

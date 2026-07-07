@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -33,10 +32,12 @@ type ProxyServer struct {
 }
 
 func main() {
-	configPath := flag.String("config", "config.yaml", "path to YAML config")
-	flag.Parse()
+	configPath := os.Getenv("CONFIG_PATH")
+	if configPath == "" {
+		log.Fatal("CONFIG_PATH is required")
+	}
 
-	config, err := loadConfig(*configPath)
+	config, err := loadConfig(configPath)
 	if err != nil {
 		log.Fatalf("load config: %v", err)
 	}
