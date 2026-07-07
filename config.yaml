@@ -1,0 +1,6 @@
+listen: ":8088"
+
+# Leave username/password empty to disable proxy auth.
+auth:
+  username: ""
+  password: ""
