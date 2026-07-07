@@ -32,9 +32,9 @@ type ProxyServer struct {
 }
 
 func main() {
-	configPath := os.Getenv("CONFIG_PATH")
+	configPath := os.Getenv("MINIPROXY_CFG_PATH")
 	if configPath == "" {
-		log.Fatal("CONFIG_PATH is required")
+		log.Fatal("MINIPROXY_CFG_PATH is required")
 	}
 
 	config, err := loadConfig(configPath)
