@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"errors"
@@ -95,18 +96,33 @@ func loadConfig(path string) (*Config, error) {
 }
 
 func (p *ProxyServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	startedAt := time.Now()
+	logger := &statusResponseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+	target := requestTarget(r)
+
+	defer func() {
+		log.Printf(
+			"client=%s method=%s target=%s status=%d duration=%s",
+			r.RemoteAddr,
+			r.Method,
+			target,
+			logger.statusCode,
+			time.Since(startedAt).Round(time.Millisecond),
+		)
+	}()
+
 	if !p.authorized(r) {
-		w.Header().Set("Proxy-Authenticate", `Basic realm="proxy"`)
-		http.Error(w, "proxy authentication required", http.StatusProxyAuthRequired)
+		logger.Header().Set("Proxy-Authenticate", `Basic realm="proxy"`)
+		http.Error(logger, "proxy authentication required", http.StatusProxyAuthRequired)
 		return
 	}
 
 	if r.Method == http.MethodConnect {
-		p.handleConnect(w, r)
+		p.handleConnect(logger, r)
 		return
 	}
 
-	p.handleHTTP(w, r)
+	p.handleHTTP(logger, r)
 }
 
 func (p *ProxyServer) handleHTTP(w http.ResponseWriter, r *http.Request) {
@@ -126,6 +142,7 @@ func (p *ProxyServer) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := p.transport.RoundTrip(outReq)
 	if err != nil {
+		log.Printf("upstream request failed target=%s err=%v", requestTarget(r), err)
 		http.Error(w, fmt.Sprintf("upstream request failed: %v", err), http.StatusBadGateway)
 		return
 	}
@@ -141,6 +158,7 @@ func (p *ProxyServer) handleHTTP(w http.ResponseWriter, r *http.Request) {
 func (p *ProxyServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	targetConn, err := net.DialTimeout("tcp", r.Host, 10*time.Second)
 	if err != nil {
+		log.Printf("connect target failed target=%s err=%v", r.Host, err)
 		http.Error(w, fmt.Sprintf("connect target failed: %v", err), http.StatusBadGateway)
 		return
 	}
@@ -155,6 +173,7 @@ func (p *ProxyServer) handleConnect(w http.ResponseWriter, r *http.Request) {
 	clientConn, rw, err := hijacker.Hijack()
 	if err != nil {
 		targetConn.Close()
+		log.Printf("hijack failed client=%s target=%s err=%v", r.RemoteAddr, r.Host, err)
 		http.Error(w, fmt.Sprintf("hijack failed: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -186,25 +205,34 @@ func (p *ProxyServer) authorized(r *http.Request) bool {
 
 	header := r.Header.Get("Proxy-Authorization")
 	if header == "" {
+		log.Printf("proxy auth missing client=%s method=%s target=%s", r.RemoteAddr, r.Method, requestTarget(r))
 		return false
 	}
 
 	scheme, encoded, ok := strings.Cut(header, " ")
 	if !ok || !strings.EqualFold(scheme, "Basic") {
+		log.Printf("proxy auth invalid scheme client=%s method=%s target=%s", r.RemoteAddr, r.Method, requestTarget(r))
 		return false
 	}
 
 	decoded, err := base64.StdEncoding.DecodeString(encoded)
 	if err != nil {
+		log.Printf("proxy auth decode failed client=%s method=%s target=%s err=%v", r.RemoteAddr, r.Method, requestTarget(r), err)
 		return false
 	}
 
 	username, password, ok := strings.Cut(string(decoded), ":")
 	if !ok {
+		log.Printf("proxy auth malformed client=%s method=%s target=%s", r.RemoteAddr, r.Method, requestTarget(r))
 		return false
 	}
 
-	return username == p.auth.Username && password == p.auth.Password
+	if username != p.auth.Username || password != p.auth.Password {
+		log.Printf("proxy auth rejected client=%s method=%s target=%s username=%s", r.RemoteAddr, r.Method, requestTarget(r), username)
+		return false
+	}
+
+	return true
 }
 
 func (p *ProxyServer) authEnabled() bool {
@@ -221,4 +249,36 @@ func copyHeader(dst, src http.Header) {
 
 func isClosedNetworkError(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "use of closed network connection")
+}
+
+func requestTarget(r *http.Request) string {
+	if r.Method == http.MethodConnect {
+		return r.Host
+	}
+
+	if r.URL == nil {
+		return ""
+	}
+
+	sanitized := *r.URL
+	sanitized.User = nil
+	return sanitized.String()
+}
+
+type statusResponseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (w *statusResponseWriter) WriteHeader(statusCode int) {
+	w.statusCode = statusCode
+	w.ResponseWriter.WriteHeader(statusCode)
+}
+
+func (w *statusResponseWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("hijacking not supported")
+	}
+	return hijacker.Hijack()
 }
